@@ -1,102 +1,149 @@
-const mysql = require('mysql2/promise'); // Using the promise wrapper
+const mysql = require('mysql2/promise');
+const fs = require('fs').promises;
+const path = require('path');
 require('dotenv').config();
 
+// Database configuration with better validation
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'ai_image_app_db',
-  port: process.env.DB_PORT || 3306, // Default MySQL port
+  port: parseInt(process.env.DB_PORT) || 3306,
   waitForConnections: true,
-  connectionLimit: 10, // Example connection limit
-  queueLimit: 0
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10,
+  queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 0,
+  multipleStatements: true // Enable for migrations
 };
 
-// Create a connection pool
+// Create connection pool
 const pool = mysql.createPool(dbConfig);
 
-// Test the connection and log success/failure
-pool.getConnection()
-  .then(connection => {
-    console.log('Connected to the MySQL database successfully!');
-    connection.release(); // Release the connection back to the pool
-  })
-  .catch(err => {
-    console.error('Error connecting to the MySQL database:');
-    console.error(\`  Error Code: ${err.code}\`);
-    console.error(\`  Error Message: ${err.message}\`);
-    // process.exit(-1); // Consider if exit is desired on initial connection failure
-  });
-
-
-// Function to execute queries
-// The mysql2/promise pool.query() method already returns a promise
-// and handles acquiring and releasing connections.
-const query = async (sql, params) => {
-  // mysql2 uses '?' as placeholders instead of $1, $2, etc.
-  // This function assumes that the calling model functions will provide SQL with '?'
-  try {
-    const [rows, fields] = await pool.query(sql, params);
-    return { rows, fields }; // Return both rows and fields for flexibility
-  } catch (error) {
-    console.error('Database query error:', error.message);
-    throw error; // Re-throw the error to be handled by the caller
-  }
-};
-
-// Function to create tables if they don't exist
-// This is a simple approach for development. For production, a more robust migration tool is recommended.
-const createTables = async () => {
+// Test database connection
+async function testConnection() {
   let connection;
   try {
-    connection = await pool.getConnection(); // Get a connection from the pool
-    console.log('Checking/creating database tables (MySQL)...');
+    connection = await pool.getConnection();
+    await connection.ping();
+    console.log('Successfully connected to MySQL database');
+    return true;
+  } catch (err) {
+    console.error('MySQL connection error:', {
+      code: err.code,
+      message: err.message
+    });
+    return false;
+  } finally {
+    if (connection) await connection.release();
+  }
+}
 
-    const fs = require('fs').promises;
-    const path = require('path');
+// Execute query with better error handling
+async function query(sql, params = []) {
+  try {
+    const [rows, fields] = await pool.query(sql, params);
+    return { rows, fields };
+  } catch (error) {
+    console.error('Database query error:', {
+      sql: sql.substring(0, 100) + (sql.length > 100 ? '...' : ''),
+      params: params,
+      error: error.message
+    });
+    throw error;
+  }
+}
+
+// Execute transaction
+async function transaction(operations) {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const result = await operations(connection);
+
+    await connection.commit();
+    return result;
+  } catch (error) {
+    if (connection) await connection.rollback();
+    throw error;
+  } finally {
+    if (connection) connection.release();
+  }
+}
+
+// Migration management
+async function runMigrations() {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    console.log('Running database migrations...');
+
+    // Create migrations table if it doesn't exist
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS migrations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Get already executed migrations
+    const [executedMigrations] = await connection.query('SELECT name FROM migrations');
+    const executedMigrationNames = new Set(executedMigrations.map(m => m.name));
+
+    // Find and run new migrations
     const migrationsDir = path.join(__dirname, '../db/migrations');
-    const files = await fs.readdir(migrationsDir);
-    files.sort(); // Ensure migrations run in order
+    const files = (await fs.readdir(migrationsDir))
+      .filter(file => file.endsWith('.sql'))
+      .sort();
+
+    let migrationsRun = 0;
 
     for (const file of files) {
-      if (file.endsWith('.sql')) {
+      if (!executedMigrationNames.has(file)) {
         const filePath = path.join(migrationsDir, file);
-        const scriptContent = await fs.readFile(filePath, 'utf8');
+        const sql = await fs.readFile(filePath, 'utf8');
 
-        // MySQL generally doesn't support executing multiple statements in a single .query() call by default for security reasons,
-        // unless the connection is specifically configured (multipleStatements: true).
-        // For simplicity and safety, we'll assume each .sql file contains one or more statements
-        // that can be split by ';' if needed, or are DDL that can run together.
-        // A more robust way would be to split statements or use a migration library.
-        // Here, we'll try to execute the whole script. If it fails due to multiple statements,
-        // the SQL files might need adjustment or the connection needs `multipleStatements: true`.
-        // For typical CREATE TABLE IF NOT EXISTS, it should be fine.
-
-        // Splitting by semicolon for individual execution (basic approach)
-        const statements = scriptContent.split(';').map(s => s.trim()).filter(s => s.length > 0);
-
-        for (const statement of statements) {
-          console.log(\`Executing SQL: ${statement.substring(0,100)}...\`); // Log snippet
-          await connection.query(statement);
-        }
-        console.log(\`Executed migration: ${file}\`);
+        console.log(`Running migration: ${file}`);
+        await connection.query(sql);
+        await connection.query('INSERT INTO migrations (name) VALUES (?)', [file]);
+        
+        migrationsRun++;
+        console.log(`Completed migration: ${file}`);
       }
     }
-    console.log('Tables checked/created successfully (MySQL).');
-  } catch (err) {
-    console.error('Error creating tables (MySQL):', err.message);
-    // If using `process.env.NODE_ENV === 'production'`, might not want to auto-create tables.
-  } finally {
-    if (connection) {
-      connection.release(); // Always release the connection
+
+    if (migrationsRun === 0) {
+      console.log('No new migrations to run');
+    } else {
+      console.log(`Successfully ran ${migrationsRun} migration(s)`);
     }
+
+    return migrationsRun;
+  } catch (error) {
+    console.error('Migration error:', error);
+    throw error;
+  } finally {
+    if (connection) await connection.release();
   }
-};
+}
+
+// Graceful shutdown
+async function close() {
+  try {
+    await pool.end();
+    console.log('MySQL connection pool closed');
+  } catch (error) {
+    console.error('Error closing MySQL pool:', error);
+  }
+}
 
 module.exports = {
-  query, // Export the query function
-  // No direct 'connect' needed like pg, pool handles connections.
-  // For direct connection access if ever needed: pool.getConnection()
-  createTables, // Export createTables to be called on app start
-  pool // Exporting pool itself can be useful for transactions
+  pool,
+  query,
+  transaction,
+  testConnection,
+  runMigrations,
+  close
 };

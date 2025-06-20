@@ -1,86 +1,159 @@
 const User = require('../models/User');
 const GeneratedImage = require('../models/GeneratedImage');
 const path = require('path');
-const fs = require('fs').promises; // Using promises version of fs
-const axios = require('axios'); // For actual HF API call later
+const fs = require('fs').promises;
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-// Ensure uploads directory exists
-const UPLOADS_DIR = path.join(__dirname, '../uploads'); // For temporary uploads by multer
-const FINAL_IMAGES_DIR = path.join(__dirname, '../uploads/images'); // For final processed images
+// Configuration constants
+const UPLOADS_DIR = path.join(__dirname, '../uploads');
+const FINAL_IMAGES_DIR = path.join(__dirname, '../uploads/images');
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const DEFAULT_MODEL_ID = process.env.DEFAULT_HF_MODEL_ID || 'simulated_model_v1';
+const SIMULATION_MODE = process.env.NODE_ENV === 'development';
 
-const ensureUploadsDirExists = async () => {
+/**
+ * Ensures upload directories exist
+ */
+async function ensureUploadsDirExists() {
   try {
     await fs.mkdir(UPLOADS_DIR, { recursive: true });
     await fs.mkdir(FINAL_IMAGES_DIR, { recursive: true });
-    console.log('Uploads directories ensured.');
+    console.log('Upload directories verified');
   } catch (error) {
-    console.error('Error creating uploads directories:', error);
+    console.error('Failed to create upload directories:', error);
+    throw new Error('Server configuration error');
   }
-};
-ensureUploadsDirExists(); // Call it on module load
+}
 
-exports.makeItNow = async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ message: 'No image file uploaded.' });
+// Initialize directories on startup
+ensureUploadsDirExists().catch(err => {
+  console.error('Critical startup error:', err);
+  process.exit(1);
+});
+
+/**
+ * Processes an image using Hugging Face API or simulation
+ * @param {Buffer} imageBuffer - The image file buffer
+ * @param {string} mimeType - The image MIME type
+ * @returns {Promise<Buffer>} - Processed image buffer
+ */
+async function processImage(imageBuffer, mimeType) {
+  if (SIMULATION_MODE) {
+    console.log('Running in simulation mode - skipping actual processing');
+    return imageBuffer;
   }
-
-  const userId = req.user.id;
-  const creditCost = req.creditCost; // From checkCredits middleware
-  const originalImagePath = req.file.path; // Path from multer (temporary)
-  const originalFilename = req.file.originalname;
 
   try {
-    // --- Simulate Hugging Face API Interaction ---
-    // In a real scenario:
-    // 1. Read the image file (e.g., await fs.readFile(originalImagePath))
-    // 2. Prepare FormData or appropriate payload for HF API
-    // 3. const hfResponse = await axios.post(process.env.HF_MODEL_ENDPOINT, formData, {
-    //      headers: { 'Authorization': \`Bearer ${process.env.HF_API_KEY}\`, ... },
-    //      responseType: 'arraybuffer' // if image is returned directly
-    //    });
-    // 4. Save the hfResponse.data (processed image) to a new file.
+    const response = await axios.post(
+      process.env.HF_MODEL_ENDPOINT,
+      imageBuffer,
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.HF_API_KEY}`,
+          'Content-Type': mimeType
+        },
+        responseType: 'arraybuffer',
+        timeout: 30000
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Hugging Face API error:', error.response?.data || error.message);
+    throw new Error('Image processing failed');
+  }
+}
 
-    // For simulation: We'll just "process" it by moving/copying it to the final directory
-    console.log(\`Simulating Hugging Face processing for: ${originalFilename}\`);
-    const uniqueFilename = \`\${Date.now()}-\${originalFilename.replace(/\s+/g, '_')}\`;
-    const finalImagePath = path.join(FINAL_IMAGES_DIR, uniqueFilename);
+/**
+ * Generates a unique filename with proper extension
+ * @param {string} originalName - Original filename
+ * @param {string} mimeType - File MIME type
+ * @returns {string} - Unique filename
+ */
+function generateUniqueFilename(originalName, mimeType) {
+  const ext = mimeType.split('/')[1] || 'bin';
+  const cleanName = originalName.replace(/[^\w.-]/g, '_');
+  return `${uuidv4()}-${cleanName}.${ext}`;
+}
 
-    // Move the file from multer's temp location to the final destination
-    await fs.rename(originalImagePath, finalImagePath);
-    console.log(\`Simulated processed image saved to: ${finalImagePath}\`);
-    // If multer saves with no extension, you might need to handle that based on mimetype
-    // For now, assuming originalFilename includes extension.
+/**
+ * Handles image generation requests
+ */
+exports.generateImage = async (req, res) => {
+  // Validate request
+  if (!req.file) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'No image file uploaded'
+    });
+  }
 
-    // --- Database Logging ---
-    const modelIdUsed = process.env.DEFAULT_HF_MODEL_ID || 'simulated_model_v1';
-    const dbRecord = await GeneratedImage.create({
+  if (!ALLOWED_MIME_TYPES.includes(req.file.mimetype)) {
+    await fs.unlink(req.file.path).catch(console.error);
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid file type. Only JPEG, PNG, and WebP are allowed'
+    });
+  }
+
+  const { id: userId, creditos: currentCredits } = req.user;
+  const creditCost = req.creditCost;
+  const { path: tempPath, originalname, mimetype } = req.file;
+
+  try {
+    // Verify user has sufficient credits
+    if (currentCredits < creditCost) {
+      throw new Error('Insufficient credits');
+    }
+
+    // Read the uploaded file
+    const imageBuffer = await fs.readFile(tempPath);
+
+    // Process the image (real or simulated)
+    const processedBuffer = await processImage(imageBuffer, mimetype);
+
+    // Save the processed image
+    const uniqueFilename = generateUniqueFilename(originalname, mimetype);
+    const finalPath = path.join(FINAL_IMAGES_DIR, uniqueFilename);
+    await fs.writeFile(finalPath, processedBuffer);
+
+    // Create database record
+    const imageRecord = await GeneratedImage.create({
       userId,
-      imagePath: \`/uploads/images/\${uniqueFilename}\`, // Store relative path for URL
-      modelId: modelIdUsed,
+      imagePath: `/uploads/images/${uniqueFilename}`,
+      modelId: DEFAULT_MODEL_ID
     });
 
-    // --- Deduct Credits ---
-    const newCreditTotal = req.user.creditos - creditCost;
-    await User.updateCredits(userId, newCreditTotal);
+    // Update user credits
+    const newCredits = currentCredits - creditCost;
+    await User.updateCredits(userId, newCredits);
 
+    // Cleanup temp file
+    await fs.unlink(tempPath);
+
+    // Return success response
     res.status(200).json({
-      message: 'Image processed and saved successfully (simulation).',
-      generatedImageUrl: dbRecord.image_path, // URL to access the image
-      creditsRemaining: newCreditTotal,
-      record: dbRecord,
+      success: true,
+      data: {
+        imageUrl: imageRecord.image_path,
+        creditsRemaining: newCredits,
+        imageId: imageRecord.id
+      }
     });
 
   } catch (error) {
-    console.error('Error in makeItNow controller:', error);
-    // Cleanup temp file if it still exists and an error occurred after upload
-    if (originalImagePath) {
-      try {
-        await fs.unlink(originalImagePath);
-      } catch (cleanupError) {
-        console.error('Error cleaning up temp file:', cleanupError);
-      }
+    console.error('Image generation error:', error);
+
+    // Cleanup temp file if it exists
+    if (tempPath) {
+      await fs.unlink(tempPath).catch(console.error);
     }
-    res.status(500).json({ message: 'Server error during image generation.' });
+
+    const statusCode = error.message === 'Insufficient credits' ? 402 : 500;
+    res.status(statusCode).json({
+      success: false,
+      error: error.message || 'Image processing failed'
+    });
   }
 };
