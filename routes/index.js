@@ -4,10 +4,12 @@ const router = express.Router();
 // @route   GET /api
 // @desc    Test route
 // @access  Public
-router.get('/', (req, res) => res.send('API Base Route Running'));
+router.get('/', (req, res) => res.status(200).json({ success: true, message: 'API Base Route Running' }));
 
-// Auth routes
+// Auth routes - mounted under /api/auth
 router.use('/auth', require('./authRoutes'));
-router.use('/hg', require('./hgRoutes'));
+
+// Image Generation routes - mounted under /api/generation
+router.use('/generation', require('./hgRoutes')); // Renamed from /hg for clarity
 
 module.exports = router;
