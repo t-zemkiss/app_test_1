@@ -5,6 +5,7 @@ const fs = require('fs').promises; // Using promises version of fs
 // const axios = require('axios'); // For actual HF API call later - keep commented for now
 require('dotenv').config();
 
+
 // Define directories
 const MULTER_UPLOAD_DIR = path.join(__dirname, '../uploads'); // As configured in uploadMiddleware
 const FINAL_IMAGES_SUBDIR = 'images'; // Subdirectory within uploads for "processed" images
@@ -41,7 +42,7 @@ exports.generateImage = async (req, res, next) => {
     // 2. Prepare FormData: const formData = new FormData(); formData.append('image', imageBuffer, originalFilename);
     // 3. API Call:
     //    const hfResponse = await axios.post(process.env.HF_MODEL_ENDPOINT, formData, {
-    //      headers: { 
+    //      headers: {
     //        'Authorization': \`Bearer ${process.env.HF_API_KEY}\`,
     //        ...formData.getHeaders() // If using 'form-data' library
     //      },
@@ -55,7 +56,7 @@ exports.generateImage = async (req, res, next) => {
 
     // For simulation: We "process" it by moving it to the final subdirectory
     console.log(`Simulating processing for: ${originalFilename} uploaded at ${uploadedFilePath}`);
-    
+
     // Generate a new unique filename for the "processed" image
     const uniqueProcessedFilename = `\${Date.now()}-\${path.basename(originalFilename).replace(/\s+/g, '_')}`;
     const finalProcessedPath = path.join(FINAL_IMAGES_DIR, uniqueProcessedFilename);

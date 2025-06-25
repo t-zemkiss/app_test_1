@@ -5,6 +5,7 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const validator = require('validator');
 require('dotenv').config();
 
+
 // --- JWT Helper ---
 const generateToken = (user) => {
   // Ensure user object is plain if it comes from a model that might have methods
@@ -43,9 +44,9 @@ exports.register = async (req, res, next) => {
     // User object from User.create is already sanitized (no password_hash) by User.findById
     const token = generateToken(user);
     // User.findById (called by User.create) already excludes password_hash
-    res.status(201).json({ 
-      success: true, 
-      token, 
+    res.status(201).json({
+      success: true,
+      token,
       user: { id: user.id, email: user.email, nombre: user.nombre, creditos: user.creditos }
     });
   } catch (error) {
@@ -53,7 +54,7 @@ exports.register = async (req, res, next) => {
       return res.status(400).json({ success: false, message: error.message });
     }
     // Pass other errors to the global error handler
-    next(error); 
+    next(error);
   }
 };
 
@@ -85,9 +86,9 @@ exports.login = async (req, res, next) => {
     }
 
     const token = generateToken(user);
-    res.status(200).json({ 
-      success: true, 
-      token, 
+    res.status(200).json({
+      success: true,
+      token,
       user: { id: user.id, email: user.email, nombre: user.nombre, creditos: user.creditos }
     });
   } catch (error) {
@@ -118,14 +119,14 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           const randomPassword = Math.random().toString(36).slice(-10) + Math.random().toString(36).slice(-10);
           user = await User.create({
             email,
-            password: randomPassword, 
+            password: randomPassword,
             nombre,
             creditos: initialCredits
           });
         }
         // 'user' from User.create or User.findForAuth (if it included all fields) is fine
         // User.findById used by User.create already cleans password_hash
-        return done(null, user); 
+        return done(null, user);
       } catch (error) {
         return done(error, null); // Pass error to passport error handling
       }
@@ -135,10 +136,10 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   exports.googleAuth = (req, res, next) => {
     passport.authenticate('google', { session: false, scope: ['profile', 'email'] })(req, res, next);
   };
-  
+
   exports.googleAuthCallback = (req, res, next) => {
-    passport.authenticate('google', { 
-      session: false, 
+    passport.authenticate('google', {
+      session: false,
       failureRedirect: '/api/auth/google/failure', // Redirect for browser flow, though API might just return error
       failWithError: true // Important for API: makes authenticate call next(err) on failure
     }, (err, user, info) => {
@@ -150,13 +151,13 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
         // This case might be hit if 'done(null, false)' is called, or other auth failures
         return res.status(401).json({ success: false, message: (info && info.message) ? info.message : 'Google authentication failed. User not processed.' });
       }
-      
+
       // User object here is the one from the strategy's done(null, user)
       // It should be sanitized (no password_hash) if User.create/findById was used correctly
       const token = generateToken(user);
-      res.status(200).json({ 
-        success: true, 
-        token, 
+      res.status(200).json({
+        success: true,
+        token,
         user: { id: user.id, email: user.email, nombre: user.nombre, creditos: user.creditos }
       });
     })(req, res, next);
@@ -182,7 +183,7 @@ passport.serializeUser((user, done) => {
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await User.findById(id); // User.findById excludes password_hash
-    done(null, user); 
+    done(null, user);
   } catch (error) {
     done(error, null);
   }
