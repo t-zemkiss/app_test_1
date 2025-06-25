@@ -67,13 +67,172 @@ This is the backend server for an application that allows users to register, log
 
 ## Running the Application
 
+### Backend
+
 1.  **Start the server:**
     ```bash
     npm s` `tart
     ```
     (This assumes a `start` script in `package.json` like `"start": "node app.js"`)
 
-2.  The application should now be running on the configured port (default: `http://127.0.0.1:5000` or `http://localhost:5000`).
+2.  The backend should now be running on the configured port (default: `http://127.0.0.1:5000` or `http://localhost:5000`).
+
+### Frontend (React Native)
+
+**General Setup:**
+
+Ensure you have a React Native development environment set up. Follow the official React Native documentation for [setting up the development environment](https://reactnative.dev/docs/environment-setup) (choose "React Native CLI Quickstart").
+
+**Running on Android:**
+
+```bash
+npx react-native run-android
+```
+
+**Running on iOS (macOS only):**
+
+```bash
+npx react-native run-ios
+```
+
+**Running on Web (Experimental/Community Support):**
+
+To run a React Native app on the web, you typically need to use a library like `react-native-web`. The setup can vary depending on the project's configuration. If the project is already configured for web:
+
+```bash
+npm run web
+# or yarn web (or similar script defined in package.json)
+```
+If not configured, you would need to add `react-native-web` and configure your bundler (e.g., Webpack or Metro) accordingly. This is an advanced setup.
+
+## Generating Production Builds (React Native)
+
+### Generating Android App Bundle (.aab)
+
+The `.aab` file is used to publish your app on the Google Play Store.
+
+1.  **Navigate to the `android` directory:**
+    ```bash
+    cd android
+    ```
+
+2.  **Clean the project (optional but recommended):**
+    ```bash
+    ./gradlew clean
+    ```
+
+3.  **Generate the release AAB:**
+    ```bash
+    ./gradlew bundleRelease
+    ```
+    The generated `.aab` file will be located at `android/app/build/outputs/bundle/release/app-release.aab`.
+
+    **Important:** This command signs the app using the release keystore. Ensure your keystore is correctly configured in `android/app/build.gradle` and the keystore file itself is present.
+
+### Modifying the Keystore (Android)
+
+The keystore is a binary file that contains a set_of private keys used to sign your Android application for release.
+
+1.  **Location:** The keystore file (e.g., `my-release-key.keystore`) is typically stored in the `android/app` directory. **It should not be committed to version control if it's your production keystore.**
+2.  **Configuration:** Keystore details (store password, key alias, key password) are configured in the `android/app/build.gradle` file, usually within the `signingConfigs` block for the `release` build type.
+    ```gradle
+    ...
+    android {
+        ...
+        signingConfigs {
+            release {
+                if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
+                    storeFile file(MYAPP_RELEASE_STORE_FILE)
+                    storePassword MYAPP_RELEASE_STORE_PASSWORD
+                    keyAlias MYAPP_RELEASE_KEY_ALIAS
+                    keyPassword MYAPP_RELEASE_KEY_PASSWORD
+                }
+            }
+        }
+        buildTypes {
+            release {
+                ...
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    ```
+    These properties (`MYAPP_RELEASE_STORE_FILE`, `MYAPP_RELEASE_STORE_PASSWORD`, etc.) are typically defined in a `gradle.properties` file (e.g., `~/.gradle/gradle.properties` or `android/gradle.properties`) to keep them out of version control:
+    ```properties
+    MYAPP_RELEASE_STORE_FILE=my-release-key.keystore
+    MYAPP_RELEASE_STORE_PASSWORD=your_store_password
+    MYAPP_RELEASE_KEY_ALIAS=your_key_alias
+    MYAPP_RELEASE_KEY_PASSWORD=your_key_password
+    ```
+3.  **Generating a new Keystore:** If you need to generate a new keystore, you can use the `keytool` command (part of the Java Development Kit - JDK):
+    ```bash
+    keytool -genkey -v -keystore my-release-key.keystore -alias my-key-alias -keyalg RSA -keysize 2048 -validity 10000
+    ```
+    You will be prompted for passwords and distinguished name information. Place the generated `.keystore` file in `android/app` and update `build.gradle` and `gradle.properties` accordingly.
+
+## Configuring Backend and Hugging Face Variables (Frontend)
+
+The frontend application will need to know where the backend is running and potentially any client-side specific keys or configurations for services like Hugging Face (though API keys should ideally be proxied through your backend).
+
+1.  **Backend URL:**
+    -   The primary configuration is the backend API endpoint. This is usually stored in a configuration file within the frontend codebase (e.g., `src/config.js` or `app/config/constants.js`).
+    -   **Example (`src/config.js`):**
+        ```javascript
+        const API_URL = 'http://localhost:5000/api'; // For local development
+
+        // For production, you might use:
+        // const API_URL = 'https://your-production-backend.com/api';
+
+        export { API_URL };
+        ```
+    -   Ensure your frontend code uses this `API_URL` when making requests.
+
+2.  **Hugging Face Variables (Client-Side):**
+    -   **It is strongly recommended NOT to embed `HF_API_KEY` directly in the frontend.** All interactions requiring the API key should go through your backend server to protect the key.
+    -   If there are client-side specific Hugging Face model IDs or other non-sensitive configurations, they can also be stored in the frontend config file.
+        **Example (`src/config.js`):**
+        ```javascript
+        // ... (API_URL as above)
+
+        const HF_MODEL_FOR_DISPLAY = 'Example Model Name'; // Non-sensitive info
+
+        export { API_URL, HF_MODEL_FOR_DISPLAY };
+        ```
+
+## Testing Key Features
+
+To ensure the application is working correctly, test the following flows:
+
+1.  **User Login:**
+    -   Attempt to register a new user.
+    -   Log in with the newly created user credentials.
+    -   Log in using Google OAuth (if configured and enabled on the frontend).
+    -   Verify that a JWT token is received upon successful login and stored/used by the frontend for subsequent authenticated requests.
+
+2.  **Image Generation:**
+    -   Log in as a user.
+    -   Navigate to the image generation screen.
+    -   Upload an image.
+    -   Trigger the "effect" or "generation" process.
+    -   Verify that the (simulated) generated image is displayed or a link to it is provided.
+    -   Check that the user's credit balance is deducted correctly.
+    -   Test edge cases: trying to generate an image with insufficient credits.
+
+3.  **Credits System:**
+    -   Verify new users receive the default amount of credits upon registration.
+    -   Confirm credit deduction after successful image generation.
+    -   If there's a way to view current credits, ensure it displays the correct amount.
+
+---
+
+### ❗IMPORTANT NOTES FOR DEVELOPMENT:
+
+-   ✅ **Backend Ready:** The backend is already set up and functional. Do not attempt to recreate or significantly modify its core structure unless specifically instructed.
+-   ✅ **JavaScript Only:** All new frontend and backend logic should be written in **JavaScript**. Do **NOT** use TypeScript.
+-   ✅ **No Expo:** This is a React Native CLI project. Do **NOT** use Expo or Expo-specific libraries/commands unless they are explicitly compatible and required.
+-   ✅ **Local Backend URL:** For local development, the frontend must connect to the backend at `http://localhost:5000`. Ensure any proxy configurations or API constants in the frontend reflect this.
+
+---
 
 ## API Endpoints
 
